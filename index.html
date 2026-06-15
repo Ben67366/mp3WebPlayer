@@ -1,0 +1,1520 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>波形オーディオプレイヤー</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap');
+    
+    :root {
+      --accent: #22d3ee;
+    }
+    
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    }
+    
+    .title-font {
+      font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+      font-weight: 600;
+      letter-spacing: -0.025em;
+    }
+
+    .waveform-container {
+      background: #18181b;
+      border-radius: 20px;
+      box-shadow: inset 0 2px 4px 0 rgb(0 0 0 / 0.3);
+      overflow: hidden;
+    }
+
+    canvas {
+      display: block;
+      touch-action: none;
+    }
+
+    .control-btn {
+      transition: all 0.1s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    
+    .control-btn:active {
+      transform: scale(0.96);
+    }
+
+    .seek-hint {
+      font-size: 0.75rem;
+      color: #64748b;
+    }
+
+    .time-display {
+      font-feature-settings: "tnum";
+      font-variant-numeric: tabular-nums;
+    }
+
+    .upload-zone {
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    
+    .upload-zone.dragover {
+      background-color: #27272a;
+      border-color: #22d3ee;
+      transform: scale(1.01);
+    }
+
+    .bar {
+      transition: fill 0.1s ease;
+    }
+
+    /* Mobile responsiveness tweaks */
+    @media (max-width: 480px) {
+      #waveform {
+        height: 110px !important;
+        max-height: 110px !important;
+      }
+      .time-display {
+        font-size: 0.9rem !important;
+      }
+      .waveform-container {
+        padding: 0.5rem !important;
+      }
+      #subtitles-list {
+        max-height: 40vh !important;
+        overflow-y: auto !important;
+        -webkit-overflow-scrolling: touch; /* better iOS scrolling */
+        touch-action: pan-y !important;
+        font-size: 12px;
+      }
+      #subtitles-section {
+        min-height: 100px;
+      }
+
+      /* Desktop subtitle list: ensure bounded height so internal scrolling works reliably */
+      @media (min-width: 768px) {
+        #subtitles-list {
+          max-height: 420px !important;
+        }
+      }
+      @media (min-width: 1024px) {
+        #subtitles-list {
+          max-height: 50vh !important;
+        }
+      }
+
+      /* Compact controls: play icon-only on top, vol+speed row below */
+      /* Keep controls compact but allow play button with text to be wider */
+      .control-btn {
+        height: 34px !important;
+        font-size: 0.75rem !important;
+      }
+      #play-btn {
+        min-width: 68px !important;
+        padding-left: 0.4rem !important;
+        padding-right: 0.4rem !important;
+      }
+      #controls-volume-speed {
+        gap: 0.35rem !important;
+      }
+      #volume-slider {
+        height: 3.5px;
+      }
+      #speed-select {
+        width: 42px !important;
+        font-size: 10px !important;
+        padding: 1px 3px !important;
+      }
+    }
+  </style>
+</head>
+<body class="bg-zinc-950 text-zinc-200 min-h-screen">
+  <div class="w-full px-3 sm:px-4 md:px-6 py-3 sm:py-4 md:py-6 flex flex-col min-h-screen md:overflow-hidden">
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-4 sm:mb-6">
+      <div>
+        <h1 class="title-font text-2xl sm:text-3xl md:text-4xl font-semibold tracking-tighter text-white">波形オーディオプレイヤー</h1>
+        <p class="mt-0.5 text-sm sm:text-base text-zinc-400">MP3の音波を可視化して、任意の位置から再生できます</p>
+      </div>
+    </div>
+
+    <!-- Upload Zone -->
+    <div id="upload-zone"
+         class="upload-zone border-2 border-dashed border-zinc-700 hover:border-zinc-500 bg-zinc-900 rounded-3xl p-6 sm:p-8 md:p-12 flex flex-col items-center justify-center text-center cursor-pointer mb-4 sm:mb-6">
+      <div class="w-12 h-12 sm:w-14 sm:h-14 mb-3 sm:mb-4 rounded-2xl bg-zinc-800 flex items-center justify-center">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-7 h-7 sm:w-8 sm:h-8 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+        </svg>
+      </div>
+      <div class="text-xl sm:text-2xl font-semibold tracking-tight text-white mb-1 sm:mb-2">MP3ファイルを読み込む</div>
+      <p class="text-sm text-zinc-400 max-w-xs">ここにファイルをドラッグ＆ドロップするか、クリックして選択してください</p>
+      
+      <input type="file" id="file-input" accept="audio/mpeg,audio/mp3,audio/wav" class="hidden">
+      
+      <button onclick="document.getElementById('file-input').click()"
+              class="mt-4 sm:mt-5 px-5 py-2 text-xs sm:text-sm font-medium bg-white text-zinc-900 hover:bg-zinc-100 active:bg-zinc-200 transition-colors rounded-2xl flex items-center gap-2 shadow-sm">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.25" d="M12 4v16m8-8H4" />
+        </svg>
+        ファイルを選択
+      </button>
+
+      <!-- Sample button for quick demo -->
+      <button id="sample-btn"
+              class="mt-2 sm:mt-3 px-4 py-1.5 text-[10px] sm:text-xs font-medium bg-emerald-900/60 hover:bg-emerald-900 border border-emerald-700 text-emerald-300 active:bg-emerald-950 transition-colors rounded-2xl flex items-center gap-1.5">
+        <span>サンプルを試す</span>
+        <span class="text-[9px] sm:text-[10px] opacity-75">(sample.mp3)</span>
+      </button>
+      <p class="text-[9px] sm:text-[10px] text-zinc-500 mt-0.5">./sample/sample.mp3 を自動ロードします</p>
+    </div>
+
+    <!-- Player -->
+    <div id="player-area" class="hidden flex-1 flex flex-col overflow-hidden">
+      <!-- File info -->
+      <div class="flex items-center justify-between mb-2 sm:mb-3 px-1">
+        <div class="flex items-center gap-2 sm:gap-3 min-w-0">
+          <div class="flex-shrink-0 w-7 h-7 sm:w-8 sm:h-8 bg-zinc-800 rounded-xl flex items-center justify-center">
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 sm:w-5 sm:h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+            </svg>
+          </div>
+          <div class="min-w-0">
+            <div id="filename" class="font-semibold text-sm sm:text-base md:text-lg text-white truncate max-w-[200px] sm:max-w-[280px] md:max-w-[420px]"></div>
+            <div id="file-meta" class="text-[10px] sm:text-xs text-zinc-500"></div>
+          </div>
+        </div>
+        
+        <button id="change-file-btn"
+                class="flex items-center gap-1.5 px-3 py-1.5 text-xs sm:text-sm rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 active:bg-zinc-950 transition-colors">
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.25" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.058 11H1M12 3v2m0 16v2m9-9H15m-6 0a8 8 0 01-.937-1.5M3 12a9 9 0 011.5-.937" />
+          </svg>
+          <span class="hidden sm:inline">別のファイル</span>
+          <span class="sm:hidden">変更</span>
+        </button>
+      </div>
+
+      <!-- Zoom controls -->
+      <div class="flex items-center justify-between mb-1.5 sm:mb-2 px-1">
+        <div class="flex items-center gap-1.5 sm:gap-2">
+          <span class="text-xs sm:text-sm text-zinc-400 select-none">波形幅</span>
+          <div class="flex rounded-xl bg-zinc-800 border border-zinc-700 overflow-hidden">
+            <button id="zoom-out-btn"
+                    class="w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center text-xl sm:text-2xl leading-none font-light text-zinc-300 hover:bg-zinc-700 active:bg-zinc-600 disabled:opacity-40 transition-colors"
+                    title="ズームアウト（波形を圧縮）">−</button>
+            <button id="zoom-in-btn"
+                    class="w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center text-xl sm:text-2xl leading-none font-light text-zinc-300 hover:bg-zinc-700 active:bg-zinc-600 transition-colors border-l border-zinc-700"
+                    title="ズームイン（波形を拡大）">+</button>
+          </div>
+          <button id="zoom-fit-btn"
+                  class="px-2 sm:px-3 h-7 sm:h-8 text-[10px] sm:text-xs font-medium rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 active:bg-zinc-950 transition-colors"
+                  title="現在の表示幅に全体をフィット">全体表示</button>
+        </div>
+        <div id="zoom-info" class="text-[10px] sm:text-xs font-mono text-zinc-500 tabular-nums"></div>
+      </div>
+
+      <!-- Waveform (scrollable when wide) -->
+      <div class="waveform-container p-2 sm:p-3 mb-1">
+        <div id="waveform-scroll"
+             class="overflow-x-auto overscroll-x-contain rounded-2xl"
+             style="scrollbar-width: thin; scrollbar-color: #3f3f46 #18181b; max-width: 100%;">
+          <canvas id="waveform" height="180"
+                  class="cursor-pointer rounded-2xl bg-zinc-950 block"
+                  style="height: 180px; max-height: 180px;"></canvas>
+        </div>
+      </div>
+
+      <!-- Time -->
+      <div class="flex items-center justify-between px-1 sm:px-2 mb-2 sm:mb-3">
+        <div id="current-time" class="time-display font-mono text-base sm:text-lg md:text-xl font-semibold tabular-nums text-white">00:00</div>
+        <div id="total-time" class="time-display font-mono text-xs text-zinc-400 tabular-nums">00:00</div>
+      </div>
+
+      <!-- Controls (single line on mobile) -->
+      <div class="bg-zinc-900 border border-zinc-800 rounded-2xl sm:rounded-3xl p-1.5 sm:p-3 flex flex-row gap-1.5 sm:gap-3 items-center">
+        <!-- Play / Pause (with text, wider button on mobile) -->
+        <button id="play-btn"
+                class="control-btn flex-none min-w-[78px] sm:min-w-[110px] h-9 sm:h-11 px-3 sm:px-6 rounded-2xl flex items-center justify-center gap-1.5 sm:gap-2 font-semibold text-xs sm:text-sm bg-cyan-400 hover:bg-cyan-300 active:bg-cyan-500 text-zinc-950 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm">
+          <svg id="play-icon" xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M8 5.14v14l11-7-11-7z"/>
+          </svg>
+          <span id="play-label" class="text-xs sm:text-sm">再生</span>
+        </button>
+
+        <!-- Volume + Speed share the remaining space in one row -->
+        <div id="controls-volume-speed" class="flex flex-1 sm:w-auto gap-1 sm:gap-2 items-center min-w-0">
+          <!-- Volume -->
+          <div class="flex items-center gap-1 flex-1 min-w-0">
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-zinc-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15.536 8.464a5 5 0 010 7.072M12 18.364a9 9 0 010-12.728M6.343 15.657a9 9 0 010-7.314" />
+            </svg>
+            <input type="range" id="volume-slider" min="0" max="1" step="0.02" value="0.85"
+                   class="w-full accent-cyan-400 cursor-pointer">
+            <div id="volume-value" class="w-6 flex-shrink-0 text-right font-mono text-[9px] sm:text-xs text-zinc-400">85%</div>
+          </div>
+
+          <!-- Speed -->
+          <div class="flex items-center gap-0.5 flex-shrink-0">
+            <select id="speed-select" 
+                    class="bg-zinc-950 border border-zinc-700 text-[10px] sm:text-xs rounded px-1 py-0.5 sm:px-1.5 sm:py-1 font-medium focus:outline-none focus:border-cyan-400 cursor-pointer w-11 sm:w-auto">
+              <option value="0.5">0.5</option>
+              <option value="0.75">0.75</option>
+              <option value="1" selected>1</option>
+              <option value="1.25">1.25</option>
+              <option value="1.5">1.5</option>
+              <option value="2">2</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Hint -->
+      <div class="px-1 sm:px-2 mt-1.5 sm:mt-2 flex items-start gap-2 text-xs sm:text-sm">
+        <div class="seek-hint leading-relaxed">
+          <span class="font-medium text-zinc-400">操作：</span>
+          波形をタップ/ドラッグでシーク。<span class="hidden sm:inline">スペースで再生/停止、矢印で±5秒。</span>
+        </div>
+      </div>
+
+      <!-- Subtitles / Timeline (bottom of player area) - 音声ロード直後から常に表示（ボタンを使えるように）。残りスペースを埋める。 -->
+      <div id="subtitles-section" class="mt-3 sm:mt-4 flex-1 flex flex-col min-h-0 overflow-hidden">
+        <div class="flex items-center justify-between mb-1.5 px-1 flex-shrink-0">
+          <div class="flex items-center gap-2 flex-wrap">
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-medium text-zinc-300">字幕 / タイムライン</span>
+              <span id="subtitle-count" class="text-[10px] px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 tabular-nums"></span>
+            </div>
+
+            <!-- Font size controls for subtitles (mobile friendly) -->
+            <div class="flex items-center gap-0.5 border border-zinc-700 rounded-xl overflow-hidden ml-1">
+              <button id="font-decrease-btn"
+                      class="px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800 active:bg-zinc-700 transition-colors"
+                      title="字幕の文字を小さく">−</button>
+              <span id="font-size-value" class="px-1.5 text-[10px] text-zinc-400 tabular-nums border-l border-r border-zinc-700 bg-zinc-950">14</span>
+              <button id="font-increase-btn"
+                      class="px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800 active:bg-zinc-700 transition-colors"
+                      title="字幕の文字を大きく">+</button>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-1.5">
+            <button id="load-subtitle-btn"
+                    class="px-3 py-1 text-xs font-medium rounded-2xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 active:bg-zinc-950 transition-colors"
+                    title="SRT / VTT / JSON を読み込み">字幕ファイル読込</button>
+            <button id="clear-subtitle-btn"
+                    class="px-3 py-1 text-xs font-medium rounded-2xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 active:bg-zinc-950 transition-colors">クリア</button>
+          </div>
+        </div>
+
+        <div id="subtitles-list"
+             class="flex-1 min-h-0 overflow-auto overscroll-contain bg-zinc-900 border border-zinc-800 rounded-2xl p-1 pb-4 text-sm leading-relaxed cursor-default max-h-[45vh] sm:max-h-[320px] md:max-h-[420px] lg:max-h-[50vh]">
+          <!-- JS populated rows or empty state prompt -->
+        </div>
+
+        <p class="mt-1 px-1 text-[9px] sm:text-[10px] text-zinc-500 leading-snug flex-shrink-0">
+          対応: .srt / .vtt / .json。ドラッグ＆ドロップ可。ブラウザ内処理。
+        </p>
+      </div>
+
+      <!-- Hidden subtitle file input (scoped to this feature) -->
+      <input type="file" id="subtitle-file-input" accept=".srt,.vtt,.json,application/json,text/vtt" class="hidden">
+    </div>
+  </div>
+
+  <!-- Hidden audio element -->
+  <audio id="audio-player" preload="metadata"></audio>
+
+  <script>
+    // Tailwind script configuration
+    function initTailwind() {
+      document.documentElement.style.setProperty('--accent', '#22d3ee');
+    }
+
+    // Global state
+    let audio = null;
+    let audioContext = null;
+    let peaks = [];
+    let audioDuration = 0;
+    let currentObjectURL = null;
+    let isDragging = false;
+    let rafId = null;
+    let isPlaying = false;
+
+    // Waveform zoom / width state (user-controlled horizontal resolution)
+    // Starts with a wide default; real value is set to full available container width on load
+    let waveformWidth = 1400;
+    const MIN_WAVEFORM_WIDTH = 320;
+    const MAX_WAVEFORM_WIDTH = 9600;
+
+    // Subtitle / AI transcription state (new evolution for Japanese timed captions)
+    let currentAudioFile = null;            // original File kept for Whisper upload
+    let subtitles = [];                     // [{start: seconds, end: seconds, text: string}]
+    let currentSubtitleIndex = -1;          // for active highlight tracking
+    let subtitleSection = null;
+    let subtitlesList = null;
+    let subtitleCountEl = null;
+    let loadSubtitleBtn = null;
+    let clearSubtitleBtn = null;
+    let subtitleFileInput = null;
+
+    // Font size for subtitles (adjustable with +/- buttons)
+    let subtitleFontSize = 14;
+    let fontDecreaseBtn = null;
+    let fontIncreaseBtn = null;
+    let fontSizeValue = null;
+
+    // Elements
+    let canvas, ctx;
+    let uploadZone, playerArea, fileInput;
+    let playBtn, playLabel, playIcon;
+    let currentTimeEl, totalTimeEl;
+    let volumeSlider, volumeValue, speedSelect;
+    let changeFileBtn, filenameEl, fileMetaEl;
+    let scrollContainer, zoomInfoEl, zoomOutBtn, zoomInBtn, zoomFitBtn;
+    let sampleBtn = null;
+
+    function formatTime(seconds) {
+      if (!isFinite(seconds) || seconds < 0) return '00:00';
+      const min = Math.floor(seconds / 60);
+      const sec = Math.floor(seconds % 60);
+      return `${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+    }
+
+    // --- Subtitle helpers & parsers (pure JS, no deps) ---
+    function parseTimeToSeconds(timeStr) {
+      if (!timeStr) return 0;
+      // Accept both comma and dot as decimal separator; support hh:mm:ss.mmm and mm:ss.mmm
+      let t = timeStr.trim().replace(',', '.');
+      const parts = t.split(':').map(p => parseFloat(p));
+      if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+      if (parts.length === 2) return parts[0] * 60 + parts[1];
+      return parseFloat(t) || 0;
+    }
+
+    function parseSRT(text) {
+      const blocks = text.trim().split(/\r?\n\r?\n/);
+      const result = [];
+      for (const block of blocks) {
+        const lines = block.trim().split(/\r?\n/);
+        if (lines.length < 2) continue;
+        // lines[0] is index (ignore), lines[1] is timing, rest is text
+        const timingLine = lines[1] || '';
+        const arrowMatch = timingLine.match(/(\S+)\s+-->\s+(\S+)/);
+        if (!arrowMatch) continue;
+        const start = parseTimeToSeconds(arrowMatch[1]);
+        const end = parseTimeToSeconds(arrowMatch[2]);
+        const textLines = lines.slice(2).join(' ').trim();
+        if (textLines) result.push({ start, end, text: textLines });
+      }
+      return result.sort((a, b) => a.start - b.start);
+    }
+
+    function parseVTT(text) {
+      // Strip header and NOTE blocks, then treat similar to SRT cues
+      let cleaned = text.replace(/^WEBVTT.*?\n/i, '').replace(/NOTE[\s\S]*?(\n\n|$)/g, '\n\n');
+      const blocks = cleaned.trim().split(/\r?\n\r?\n/);
+      const result = [];
+      for (const block of blocks) {
+        const lines = block.trim().split(/\r?\n/);
+        if (lines.length < 1) continue;
+        // optional cue id on first line; find the line containing -->
+        let timingLine = lines.find(l => l.includes('-->')) || '';
+        const arrowMatch = timingLine.match(/(\S+)\s+-->\s+(\S+)/);
+        if (!arrowMatch) continue;
+        const start = parseTimeToSeconds(arrowMatch[1]);
+        const end = parseTimeToSeconds(arrowMatch[2]);
+        // text is everything after the timing line
+        const idx = lines.indexOf(timingLine);
+        const textLines = (idx >= 0 ? lines.slice(idx + 1) : lines.slice(1)).join(' ').trim();
+        if (textLines) result.push({ start, end, text: textLines });
+      }
+      return result.sort((a, b) => a.start - b.start);
+    }
+
+    function parseJSONSubtitles(text) {
+      try {
+        const data = JSON.parse(text);
+        // Case 1: direct Whisper verbose_json
+        if (data && Array.isArray(data.segments)) {
+          return data.segments
+            .map(s => ({ start: Number(s.start) || 0, end: Number(s.end) || 0, text: (s.text || '').trim() }))
+            .filter(s => s.text);
+        }
+        // Case 2: simple array [{start, end, text}, ...]
+        if (Array.isArray(data)) {
+          return data
+            .map(s => ({ start: Number(s.start) || 0, end: Number(s.end) || 0, text: (s.text || '').trim() }))
+            .filter(s => s.text)
+            .sort((a, b) => a.start - b.start);
+        }
+      } catch (e) {
+        console.warn('JSON subtitle parse failed', e);
+      }
+      return [];
+    }
+
+    // --- Font size controls for subtitles (mobile + accessibility) ---
+    function applySubtitleFontSize() {
+      if (subtitlesList) {
+        subtitlesList.style.fontSize = subtitleFontSize + 'px';
+      }
+      if (fontSizeValue) {
+        fontSizeValue.textContent = subtitleFontSize;
+      }
+    }
+
+    function changeSubtitleFontSize(delta) {
+      subtitleFontSize = Math.max(10, Math.min(28, subtitleFontSize + delta));
+      applySubtitleFontSize();
+    }
+
+    function renderSubtitles() {
+      if (!subtitlesList || !subtitleSection) return;
+
+      // 音声ロード後は常に字幕エリアを表示（ボタンが使えるように）
+      subtitleSection.classList.remove('hidden');
+
+      subtitlesList.innerHTML = '';
+
+      if (!subtitles.length) {
+        subtitlesList.innerHTML = `<div class="h-full flex items-center justify-center text-center text-xs text-zinc-400 px-3">字幕が読み込まれていません。<br>「字幕ファイル読込」ボタンから .srt / .vtt / .json ファイルを読み込んでください。</div>`;
+        if (subtitleCountEl) subtitleCountEl.textContent = '0件';
+        applySubtitleFontSize();
+        return;
+      }
+
+      const frag = document.createDocumentFragment();
+      subtitles.forEach((cue, idx) => {
+        const row = document.createElement('div');
+        row.className = 'flex gap-2 px-3 py-2 rounded-xl hover:bg-zinc-800 cursor-pointer transition-colors border border-transparent';
+        row.dataset.start = cue.start;
+        row.dataset.end = cue.end;
+        row.dataset.idx = idx;
+
+        const time = document.createElement('span');
+        time.className = 'font-mono text-xs text-cyan-400 shrink-0 w-[52px] tabular-nums select-none';
+        time.textContent = formatTime(cue.start);
+
+        const txt = document.createElement('span');
+        txt.className = 'text-zinc-200 break-words';
+        txt.textContent = cue.text;
+
+        row.appendChild(time);
+        row.appendChild(txt);
+
+        row.addEventListener('click', () => handleSubtitleClick(cue.start));
+        frag.appendChild(row);
+      });
+      subtitlesList.appendChild(frag);
+
+      if (subtitleCountEl) {
+        subtitleCountEl.textContent = `${subtitles.length}件`;
+      }
+      // Re-apply active if we have a current time
+      if (audio) updateActiveSubtitle(audio.currentTime || 0);
+
+      // Apply adjustable subtitle font size
+      applySubtitleFontSize();
+    }
+
+    function clearSubtitles() {
+      subtitles = [];
+      currentSubtitleIndex = -1;
+      if (subtitlesList) {
+        subtitlesList.innerHTML = `<div class="px-3 py-4 text-center text-xs text-zinc-400">字幕が読み込まれていません。<br>「字幕ファイル読込」からファイルを読み込んでください。</div>`;
+      }
+      // セクション自体は非表示にせず、常に表示したまま（ボタンを使える）
+      if (subtitleSection) subtitleSection.classList.remove('hidden');
+      if (subtitleCountEl) subtitleCountEl.textContent = '0件';
+
+      // Keep font size consistent even in empty state
+      applySubtitleFontSize();
+    }
+
+    function updateActiveSubtitle(currentTime) {
+      if (!subtitlesList || !subtitles.length) return;
+
+      let newIndex = -1;
+      for (let i = 0; i < subtitles.length; i++) {
+        const cue = subtitles[i];
+        if (currentTime >= cue.start && currentTime < cue.end) {
+          newIndex = i;
+          break;
+        }
+      }
+      // fallback: find last cue that has started
+      if (newIndex === -1) {
+        for (let i = subtitles.length - 1; i >= 0; i--) {
+          if (currentTime >= subtitles[i].start) {
+            newIndex = i;
+            break;
+          }
+        }
+      }
+
+      if (newIndex === currentSubtitleIndex) return;
+      currentSubtitleIndex = newIndex;
+
+      // update DOM classes
+      const rows = subtitlesList.children;
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const idx = parseInt(r.dataset.idx, 10);
+        if (idx === newIndex) {
+          r.classList.add('!bg-zinc-800', 'border-l-4', 'border-cyan-400');
+          r.classList.remove('border-transparent');
+          // gentle scroll only on change and when playing (avoid fighting user)
+          if (audio && !audio.paused) {
+            r.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          }
+        } else {
+          r.classList.remove('!bg-zinc-800', 'border-l-4', 'border-cyan-400');
+          r.classList.add('border-transparent');
+        }
+      }
+    }
+
+    function handleSubtitleClick(startSeconds) {
+      if (!audio) return;
+      audio.currentTime = startSeconds;
+      // immediate visual sync (wave + time)
+      drawWaveform(getProgress());
+      updateTimeDisplay();
+      // satisfy user request: start playback from this subtitle
+      audio.play().catch(() => {});
+      // the RAF loop + updateActive will take care of highlighting
+    }
+
+    function loadSubtitleFile(file) {
+      if (!file || !subtitlesList) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target.result || '';
+        let parsed = [];
+        const name = (file.name || '').toLowerCase();
+        if (name.endsWith('.srt')) {
+          parsed = parseSRT(text);
+        } else if (name.endsWith('.vtt')) {
+          parsed = parseVTT(text);
+        } else if (name.endsWith('.json')) {
+          parsed = parseJSONSubtitles(text);
+        } else {
+          // try all
+          parsed = parseSRT(text);
+          if (!parsed.length) parsed = parseVTT(text);
+          if (!parsed.length) parsed = parseJSONSubtitles(text);
+        }
+        if (parsed.length) {
+          subtitles = parsed;
+          renderSubtitles();
+        } else {
+          alert('字幕を解析できませんでした。対応形式: .srt / .vtt / .json');
+        }
+      };
+      reader.onerror = () => alert('字幕ファイルの読み込みに失敗しました。');
+      reader.readAsText(file);
+    }
+
+    function resizeWaveformCanvas() {
+      if (!canvas) return;
+      
+      const dpr = window.devicePixelRatio || 1;
+      const logicalHeight = (window.innerWidth < 480 ? 110 : 180);
+
+      // Use the controlled logical width (this enables horizontal scrolling when > visible area)
+      canvas.width = Math.floor(waveformWidth * dpr);
+      canvas.height = Math.floor(logicalHeight * dpr);
+
+      // Explicit pixel width so the canvas can be wider than its parent scroll container
+      canvas.style.width = waveformWidth + 'px';
+      canvas.style.height = logicalHeight + 'px';
+
+      ctx = canvas.getContext('2d', { alpha: true, desynchronized: true });
+      
+      // Scale context for HiDPI
+      ctx.scale(dpr, dpr);
+    }
+
+    function computePeaks(audioBuffer, targetPeaks = 720) {
+      const channelData = audioBuffer.getChannelData(0);
+      const sampleCount = channelData.length;
+      
+      if (sampleCount === 0) return [];
+      
+      const blockSize = Math.floor(sampleCount / targetPeaks) || 1;
+      const result = new Array(targetPeaks).fill(0);
+      
+      for (let i = 0; i < targetPeaks; i++) {
+        const start = i * blockSize;
+        const end = Math.min(start + blockSize, sampleCount);
+        let max = 0;
+        
+        for (let j = start; j < end; j++) {
+          const val = Math.abs(channelData[j]);
+          if (val > max) max = val;
+        }
+        result[i] = max;
+      }
+      
+      // Normalize to use full visual height
+      const maxPeak = Math.max(...result) || 1;
+      return result.map(p => p / maxPeak);
+    }
+
+    function drawWaveform(progress = 0) {
+      if (!ctx || !canvas || !peaks.length) return;
+      
+      const dpr = window.devicePixelRatio || 1;
+      const width = canvas.width / dpr;
+      const height = canvas.height / dpr;
+      
+      ctx.save();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // reset then apply scale
+      
+      // Clear
+      ctx.clearRect(0, 0, width, height);
+      
+      const barCount = peaks.length;
+      const barWidth = width / barCount;
+      const centerY = height / 2;
+      const maxAmp = centerY * 0.92;
+      
+      const playedX = Math.max(0, Math.min(width, progress * width));
+      
+      // 1. Draw full waveform (unplayed color)
+      ctx.fillStyle = '#3f3f46'; // zinc-700
+      
+      for (let i = 0; i < barCount; i++) {
+        const x = i * barWidth;
+        const peak = peaks[i];
+        const barHeight = peak * maxAmp;
+        
+        const drawX = Math.floor(x);
+        const drawW = Math.max(1, Math.floor(barWidth - 0.6));
+        
+        ctx.fillRect(drawX, centerY - barHeight, drawW, barHeight * 2);
+      }
+      
+      // 2. Draw played portion using clipping (accent color)
+      if (playedX > 1) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, 0, playedX, height);
+        ctx.clip();
+        
+        ctx.fillStyle = '#22d3ee'; // cyan-400
+        
+        for (let i = 0; i < barCount; i++) {
+          const x = i * barWidth;
+          if (x > playedX) break;
+          
+          const peak = peaks[i];
+          const barHeight = peak * maxAmp;
+          
+          const drawX = Math.floor(x);
+          const drawW = Math.max(1, Math.floor(barWidth - 0.6));
+          
+          ctx.fillRect(drawX, centerY - barHeight, drawW, barHeight * 2);
+        }
+        ctx.restore();
+      }
+      
+      // 3. Playhead (thin vertical line)
+      const headX = Math.floor(playedX);
+      ctx.strokeStyle = '#f43f5e'; // rose-500
+      ctx.lineWidth = 2.5;
+      ctx.lineCap = 'round';
+      
+      ctx.beginPath();
+      ctx.moveTo(headX, 6);
+      ctx.lineTo(headX, height - 6);
+      ctx.stroke();
+      
+      // Small dot at top of playhead for visibility
+      ctx.fillStyle = '#f43f5e';
+      ctx.beginPath();
+      ctx.arc(headX, 6, 3, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.restore();
+    }
+
+    function getProgress() {
+      if (!audio || !audioDuration) return 0;
+      return Math.min(1, Math.max(0, audio.currentTime / audioDuration));
+    }
+
+    function updateTimeDisplay() {
+      if (!audio || !currentTimeEl || !totalTimeEl) return;
+      
+      currentTimeEl.textContent = formatTime(audio.currentTime);
+      if (audioDuration) {
+        totalTimeEl.textContent = formatTime(audioDuration);
+      }
+    }
+
+    function startProgressLoop() {
+      cancelAnimationFrame(rafId);
+      
+      function frame() {
+        if (!audio) return;
+        
+        const progress = getProgress();
+        drawWaveform(progress);
+        updateTimeDisplay();
+        updateActiveSubtitle(audio.currentTime || 0);
+        
+        if (!audio.paused && !audio.ended) {
+          rafId = requestAnimationFrame(frame);
+        }
+      }
+      
+      rafId = requestAnimationFrame(frame);
+    }
+
+    function stopProgressLoop() {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+
+    // === Waveform width / zoom controls ===
+    function updateZoomInfo() {
+      if (!zoomInfoEl) return;
+      zoomInfoEl.textContent = `${waveformWidth}px`;
+    }
+
+    function updateZoomButtons() {
+      if (!zoomOutBtn || !zoomInBtn) return;
+      zoomOutBtn.disabled = waveformWidth <= MIN_WAVEFORM_WIDTH;
+      zoomInBtn.disabled = waveformWidth >= MAX_WAVEFORM_WIDTH;
+    }
+
+    function scrollToProgress(progress) {
+      if (!scrollContainer || !progress || !waveformWidth) return;
+      const visibleWidth = scrollContainer.clientWidth || 800;
+      const targetX = progress * waveformWidth;
+      // Keep playhead roughly visible after zoom width change (centering behavior)
+      let desired = targetX - (visibleWidth * 0.45);
+      desired = Math.max(0, Math.min(desired, waveformWidth - visibleWidth + 40));
+      scrollContainer.scrollLeft = Math.floor(desired);
+    }
+
+    function setWaveformWidth(newWidth, keepView = true) {
+      const prevWidth = waveformWidth;
+      const prevProgress = getProgress();
+
+      waveformWidth = Math.max(MIN_WAVEFORM_WIDTH, Math.min(MAX_WAVEFORM_WIDTH, Math.floor(newWidth)));
+
+      resizeWaveformCanvas();
+      drawWaveform(prevProgress);
+
+      if (keepView && scrollContainer) {
+        // After changing waveform width (zoom), try to keep the current position visible
+        scrollToProgress(prevProgress);
+      }
+
+      updateZoomInfo();
+      updateZoomButtons();
+    }
+
+    function zoomIn() {
+      setWaveformWidth(waveformWidth * 1.55);
+    }
+
+    function zoomOut() {
+      setWaveformWidth(waveformWidth / 1.55);
+    }
+
+    function zoomToFit() {
+      if (!scrollContainer) return;
+      // Fit to the currently available horizontal space in the scroll container's parent
+      const available = Math.max(MIN_WAVEFORM_WIDTH, Math.floor(scrollContainer.clientWidth));
+      setWaveformWidth(available);
+    }
+
+    function seekTo(percent) {
+      if (!audio || !audioDuration) return;
+      
+      const newTime = percent * audioDuration;
+      audio.currentTime = newTime;
+      
+      // Immediate visual feedback (no auto-scroll on click/seek — user controls the view)
+      drawWaveform(percent);
+      updateTimeDisplay();
+    }
+
+    function getSeekPercentFromEvent(e) {
+      if (!canvas) return 0;
+      
+      const rect = canvas.getBoundingClientRect();
+      let clientX;
+      
+      if (e.touches && e.touches.length > 0) {
+        clientX = e.touches[0].clientX;
+      } else {
+        clientX = e.clientX;
+      }
+      
+      const relativeX = clientX - rect.left;
+      return Math.max(0, Math.min(1, relativeX / rect.width));
+    }
+
+    function attachSeekHandlers() {
+      if (!canvas) return;
+      
+      // Mouse
+      canvas.addEventListener('mousedown', (e) => {
+        const p = getSeekPercentFromEvent(e);
+        seekTo(p);
+        isDragging = true;
+      });
+      
+      window.addEventListener('mousemove', (e) => {
+        if (isDragging) {
+          const p = getSeekPercentFromEvent(e);
+          seekTo(p);
+        }
+      });
+      
+      window.addEventListener('mouseup', () => {
+        isDragging = false;
+      });
+      
+      // Touch support (mobile / tablet)
+      canvas.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        const p = getSeekPercentFromEvent(e);
+        seekTo(p);
+        isDragging = true;
+      }, { passive: false });
+      
+      canvas.addEventListener('touchmove', (e) => {
+        if (isDragging) {
+          e.preventDefault();
+          const p = getSeekPercentFromEvent(e);
+          seekTo(p);
+        }
+      }, { passive: false });
+      
+      canvas.addEventListener('touchend', () => {
+        isDragging = false;
+      });
+      
+      // Bonus: simple click also works via mousedown
+    }
+
+    function togglePlayback() {
+      if (!audio) return;
+      
+      if (audio.paused || audio.ended) {
+        // Resume or start
+        audio.play().then(() => {
+          isPlaying = true;
+          updatePlayButton(true);
+          startProgressLoop();
+        }).catch(err => {
+          console.warn('再生に失敗:', err);
+          alert('再生できませんでした。ブラウザの自動再生制限を確認してください。');
+        });
+      } else {
+        audio.pause();
+        isPlaying = false;
+        updatePlayButton(false);
+        stopProgressLoop();
+        // Final draw at paused position
+        drawWaveform(getProgress());
+      }
+    }
+
+    function updatePlayButton(playing) {
+      if (!playLabel || !playIcon) return;
+      
+      if (playing) {
+        playLabel.textContent = '一時停止';
+        playIcon.innerHTML = '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>';
+        playBtn.classList.remove('bg-cyan-400', 'hover:bg-cyan-300', 'active:bg-cyan-500');
+        playBtn.classList.add('bg-rose-400', 'hover:bg-rose-300', 'active:bg-rose-500');
+      } else {
+        playLabel.textContent = '再生';
+        playIcon.innerHTML = '<path d="M8 5.14v14l11-7-11-7z"/>';
+        playBtn.classList.remove('bg-rose-400', 'hover:bg-rose-300', 'active:bg-rose-500');
+        playBtn.classList.add('bg-cyan-400', 'hover:bg-cyan-300', 'active:bg-cyan-500');
+      }
+    }
+
+    function loadAudioFile(file) {
+      // Cleanup previous
+      if (currentObjectURL) {
+        URL.revokeObjectURL(currentObjectURL);
+        currentObjectURL = null;
+      }
+      if (audio) {
+        audio.pause();
+        audio.src = '';
+      }
+      stopProgressLoop();
+      
+      // Keep original File for optional AI transcription (Whisper)
+      currentAudioFile = file;
+      // Clear any previous subtitles for the new audio
+      clearSubtitles();
+      
+      // Create new object URL for playback
+      currentObjectURL = URL.createObjectURL(file);
+      
+      // Prepare audio element
+      if (!audio) {
+        audio = document.getElementById('audio-player');
+      }
+      audio.src = currentObjectURL;
+      
+      // UI: show player
+      uploadZone.classList.add('hidden');
+      playerArea.classList.remove('hidden');
+
+      // 字幕エリアも音声ロード直後から表示（ボタンをすぐ使えるように）
+      if (subtitleSection) subtitleSection.classList.remove('hidden');
+      // 空の状態を表示（renderSubtitles が empty prompt を出す）
+      if (typeof renderSubtitles === 'function') renderSubtitles();
+      
+      // Filename + meta
+      filenameEl.textContent = file.name;
+      const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+      fileMetaEl.textContent = `${sizeMB} MB`;
+      
+      // Reset visual state
+      peaks = [];
+      audioDuration = 0;
+      drawWaveform(0);
+      currentTimeEl.textContent = '00:00';
+      totalTimeEl.textContent = '00:00';
+      playBtn.disabled = true;
+      
+      // Decode for waveform (separate from playback)
+      const loadingText = () => {
+        if (!canvas) return;
+        // Use the intended logical size for the "analyzing" message
+        const dpr = window.devicePixelRatio || 1;
+        const logicalW = waveformWidth || 1400;
+        const logicalH = (window.innerWidth < 480 ? 110 : 180);
+        
+        canvas.width = Math.floor(logicalW * dpr);
+        canvas.height = Math.floor(logicalH * dpr);
+        canvas.style.width = logicalW + 'px';
+        canvas.style.height = logicalH + 'px';
+        
+        ctx = canvas.getContext('2d', { alpha: true });
+        ctx.scale(dpr, dpr);
+        
+        ctx.save();
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, logicalW, logicalH);
+        ctx.fillStyle = '#52525b';
+        ctx.font = '600 13px Inter, system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('音波データを解析中...', logicalW / 2, logicalH / 2 + 4);
+        ctx.restore();
+      };
+      
+      loadingText();
+      
+      // Decode audio data
+      file.arrayBuffer().then(arrayBuffer => {
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        
+        return audioContext.decodeAudioData(arrayBuffer);
+      }).then(decodedBuffer => {
+        peaks = computePeaks(decodedBuffer);
+        audioDuration = decodedBuffer.duration;
+        
+        // Set initial waveform width to the full visible width of the scroll container (no artificial max)
+        if (scrollContainer) {
+          const available = Math.max(640, Math.floor(scrollContainer.clientWidth));
+          waveformWidth = available;
+        } else {
+          waveformWidth = 1400;
+        }
+        
+        // Setup crisp canvas with controlled width (enables later zoom + scroll)
+        resizeWaveformCanvas();
+        drawWaveform(0);
+        
+        // Enable play
+        playBtn.disabled = false;
+        
+        // Update total time immediately
+        totalTimeEl.textContent = formatTime(audioDuration);
+        
+        // Attach audio listeners (once)
+        attachAudioListeners();
+        
+        // Show initial zoom state
+        updateZoomInfo();
+        updateZoomButtons();
+        
+        // Auto play after decode? (commented - better let user click)
+        // audio.play().then(() => { ... });
+      }).catch(err => {
+        console.error('デコードエラー:', err);
+        alert('音声ファイルの解析に失敗しました。\n別のMP3ファイルをお試しください。');
+        // Allow retry: show upload again
+        resetToUpload();
+      });
+    }
+
+    let audioListenersAttached = false;
+    
+    function attachAudioListeners() {
+      if (audioListenersAttached || !audio) return;
+      audioListenersAttached = true;
+      
+      audio.addEventListener('timeupdate', () => {
+        // We drive the UI primarily via RAF loop when playing.
+        // This is a fallback for seeking via native controls (none) or other.
+        if (audio.paused) {
+          drawWaveform(getProgress());
+          updateTimeDisplay();
+          updateActiveSubtitle(audio.currentTime || 0);
+        }
+      });
+      
+      audio.addEventListener('ended', () => {
+        isPlaying = false;
+        updatePlayButton(false);
+        stopProgressLoop();
+        drawWaveform(1);
+        currentTimeEl.textContent = formatTime(audioDuration);
+      });
+      
+      audio.addEventListener('pause', () => {
+        isPlaying = false;
+        updatePlayButton(false);
+        stopProgressLoop();
+      });
+      
+      audio.addEventListener('play', () => {
+        isPlaying = true;
+        updatePlayButton(true);
+        startProgressLoop();
+      });
+      
+      // Volume and rate are bound directly via input listeners
+    }
+
+    function attachControlListeners() {
+      // Play button
+      playBtn.addEventListener('click', togglePlayback);
+      
+      // Volume
+      volumeSlider.addEventListener('input', () => {
+        if (audio) {
+          audio.volume = parseFloat(volumeSlider.value);
+        }
+        const pct = Math.round(parseFloat(volumeSlider.value) * 100);
+        volumeValue.textContent = pct + '%';
+      });
+      
+      // Speed
+      speedSelect.addEventListener('change', () => {
+        if (audio) {
+          audio.playbackRate = parseFloat(speedSelect.value);
+        }
+      });
+      
+      // Change file
+      changeFileBtn.addEventListener('click', resetToUpload);
+      
+      // Keyboard shortcuts
+      document.addEventListener('keydown', (e) => {
+        if (!playerArea || playerArea.classList.contains('hidden')) return;
+        
+        if (e.code === 'Space') {
+          e.preventDefault();
+          togglePlayback();
+        }
+        
+        if (e.code === 'ArrowRight' && audio) {
+          e.preventDefault();
+          audio.currentTime = Math.min(audioDuration || 0, audio.currentTime + 5);
+          drawWaveform(getProgress());
+          updateTimeDisplay();
+          updateActiveSubtitle(audio.currentTime || 0);
+        }
+        
+        if (e.code === 'ArrowLeft' && audio) {
+          e.preventDefault();
+          audio.currentTime = Math.max(0, audio.currentTime - 5);
+          drawWaveform(getProgress());
+          updateTimeDisplay();
+          updateActiveSubtitle(audio.currentTime || 0);
+        }
+        
+        // Bonus: number keys for speed presets
+        if (e.key === '1') { setSpeed(1); }
+        if (e.key === '2') { setSpeed(1.5); }
+        if (e.key === '0') { setSpeed(0.75); }
+      });
+      
+      // Window resize → keep current zoom width but update backing store + redraw
+      let resizeTimer = null;
+      window.addEventListener('resize', () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          if (peaks.length > 0 && !playerArea.classList.contains('hidden')) {
+            // Keep the user-chosen waveformWidth (so zoomed-in state survives resize)
+            resizeWaveformCanvas();
+            drawWaveform(getProgress());
+          }
+        }, 140);
+      });
+    }
+    
+    function setSpeed(rate) {
+      if (!audio || !speedSelect) return;
+      audio.playbackRate = rate;
+      speedSelect.value = rate.toString();
+    }
+
+    function attachZoomListeners() {
+      if (!zoomOutBtn || !zoomInBtn || !zoomFitBtn || !scrollContainer) return;
+
+      zoomOutBtn.addEventListener('click', zoomOut);
+      zoomInBtn.addEventListener('click', zoomIn);
+      zoomFitBtn.addEventListener('click', zoomToFit);
+
+      // Also allow double-click on the scroll area to fit (convenience)
+      scrollContainer.addEventListener('dblclick', (e) => {
+        // Only fit if not clicking the canvas for seek (rough check)
+        if (e.target === canvas) return;
+        zoomToFit();
+      });
+
+      // Update info when user manually scrolls (optional visual feedback)
+      scrollContainer.addEventListener('scroll', () => {
+        // Could show "scrolled" state if desired; keeping simple for now
+      }, { passive: true });
+
+      updateZoomButtons();
+    }
+
+    function attachSubtitleListeners() {
+      if (!loadSubtitleBtn || !clearSubtitleBtn || !subtitlesList || !subtitleFileInput) return;
+
+      loadSubtitleBtn.addEventListener('click', () => subtitleFileInput.click());
+
+      subtitleFileInput.addEventListener('change', () => {
+        const f = subtitleFileInput.files && subtitleFileInput.files[0];
+        if (f) loadSubtitleFile(f);
+        subtitleFileInput.value = '';
+      });
+
+      clearSubtitleBtn.addEventListener('click', () => {
+        clearSubtitles();
+      });
+
+      // Drag & drop subtitles onto the list area (convenient when audio is already loaded)
+      subtitlesList.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        subtitlesList.style.borderColor = '#22d3ee';
+      });
+      subtitlesList.addEventListener('dragleave', () => {
+        subtitlesList.style.borderColor = '';
+      });
+      subtitlesList.addEventListener('drop', (e) => {
+        e.preventDefault();
+        subtitlesList.style.borderColor = '';
+        const f = e.dataTransfer.files && e.dataTransfer.files[0];
+        if (f) {
+          // accept common subtitle extensions or json
+          const n = f.name.toLowerCase();
+          if (n.endsWith('.srt') || n.endsWith('.vtt') || n.endsWith('.json')) {
+            loadSubtitleFile(f);
+          } else {
+            alert('字幕ファイル (.srt / .vtt / .json) をドロップしてください。');
+          }
+        }
+      });
+    }
+
+    function attachUploadListeners() {
+      // Click on zone opens file picker
+      uploadZone.addEventListener('click', (e) => {
+        // Ignore if clicking the actual button inside
+        if (e.target.tagName === 'BUTTON') return;
+        fileInput.click();
+      });
+      
+      // File input
+      fileInput.addEventListener('change', () => {
+        const file = fileInput.files[0];
+        if (file) {
+          loadAudioFile(file);
+        }
+        fileInput.value = ''; // allow reselect same file
+      });
+      
+      // Drag & drop
+      uploadZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        uploadZone.classList.add('dragover');
+      });
+      
+      uploadZone.addEventListener('dragleave', () => {
+        uploadZone.classList.remove('dragover');
+      });
+      
+      uploadZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        uploadZone.classList.remove('dragover');
+        
+        const file = e.dataTransfer.files[0];
+        if (file && (file.type === 'audio/mpeg' || file.type === 'audio/mp3' || file.name.toLowerCase().endsWith('.mp3'))) {
+          loadAudioFile(file);
+        } else {
+          alert('MP3ファイル（.mp3）を選択してください。');
+        }
+      });
+      
+      // Also allow dropping files directly on the waveform once player is visible
+      const waveformContainer = document.querySelector('.waveform-container');
+      if (waveformContainer) {
+        waveformContainer.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          waveformContainer.style.borderColor = '#22d3ee';
+        });
+        waveformContainer.addEventListener('dragleave', () => {
+          waveformContainer.style.borderColor = '';
+        });
+        waveformContainer.addEventListener('drop', (e) => {
+          e.preventDefault();
+          waveformContainer.style.borderColor = '';
+          const file = e.dataTransfer.files[0];
+          if (file && (file.name.toLowerCase().endsWith('.mp3') || file.type.startsWith('audio/'))) {
+            loadAudioFile(file);
+          }
+        });
+      }
+    }
+
+    function resetToUpload() {
+      // Cleanup
+      stopProgressLoop();
+      if (audio) {
+        audio.pause();
+        audio.src = '';
+      }
+      if (currentObjectURL) {
+        URL.revokeObjectURL(currentObjectURL);
+        currentObjectURL = null;
+      }
+      
+      peaks = [];
+      audioDuration = 0;
+      isPlaying = false;
+      audioListenersAttached = false;
+
+      // Clear AI subtitle state + original file ref
+      currentAudioFile = null;
+      clearSubtitles();
+      
+      // UI reset
+      playerArea.classList.add('hidden');
+      uploadZone.classList.remove('hidden');
+      
+      // Reset canvas if exists
+      if (canvas && ctx) {
+        const dpr = window.devicePixelRatio || 1;
+        const w = canvas.width / dpr;
+        const h = canvas.height / dpr;
+        ctx.save();
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+        ctx.restore();
+      }
+      
+      // Reset time labels
+      if (currentTimeEl) currentTimeEl.textContent = '00:00';
+      if (totalTimeEl) totalTimeEl.textContent = '00:00';
+    }
+
+    // Load bundled sample audio (for demo without user file selection)
+    function loadSampleAudio() {
+      const audioPath = './sample/sample.mp3';
+      const srtPath = './sample/sample.srt';
+
+      // Visual feedback
+      const originalText = uploadZone ? uploadZone.innerHTML : '';
+      if (uploadZone) {
+        uploadZone.style.pointerEvents = 'none';
+        uploadZone.innerHTML = `
+          <div class="flex flex-col items-center justify-center text-center">
+            <div class="w-8 h-8 mb-3 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin"></div>
+            <div class="text-emerald-300 text-sm">サンプルを読み込んでいます...</div>
+            <div class="text-[10px] text-zinc-500 mt-1">${audioPath}</div>
+          </div>`;
+      }
+
+      fetch(audioPath)
+        .then(response => {
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status} - ファイルが見つかりません`);
+          }
+          return response.blob();
+        })
+        .then(blob => {
+          const sampleFile = new File([blob], 'sample.mp3', { type: 'audio/mpeg' });
+          // Restore upload zone appearance in case of error later
+          if (uploadZone) {
+            uploadZone.style.pointerEvents = '';
+          }
+          loadAudioFile(sampleFile);
+
+          // After audio starts loading, try to auto-load matching sample subtitles
+          loadSampleSubtitles(srtPath);
+        })
+        .catch(err => {
+          console.error('Sample load failed:', err);
+          if (uploadZone) {
+            uploadZone.style.pointerEvents = '';
+            uploadZone.innerHTML = originalText || uploadZone.innerHTML;
+          }
+          alert('サンプルファイルの読み込みに失敗しました。\n\n' +
+                '以下の場所に sample.mp3 を配置してください：\n' +
+                './sample/sample.mp3\n\n' +
+                '詳細: ' + err.message);
+        });
+    }
+
+    // Helper to load sample SRT automatically (silent fail if missing)
+    function loadSampleSubtitles(srtPath) {
+      if (!srtPath || typeof loadSubtitleFile !== 'function') return;
+
+      fetch(srtPath)
+        .then(response => {
+          if (!response.ok) return null; // missing SRT is okay for sample
+          return response.blob();
+        })
+        .then(blob => {
+          if (!blob) return;
+          const srtFile = new File([blob], 'sample.srt', { type: 'text/srt' });
+          loadSubtitleFile(srtFile);
+        })
+        .catch(() => {
+          // Silently ignore missing or unreadable sample.srt
+          // console.log('No sample.srt found or failed to load (this is optional)');
+        });
+    }
+
+    function initializePlayer() {
+      initTailwind();
+      
+      // Cache DOM
+      canvas = document.getElementById('waveform');
+      uploadZone = document.getElementById('upload-zone');
+      playerArea = document.getElementById('player-area');
+      fileInput = document.getElementById('file-input');
+      
+      playBtn = document.getElementById('play-btn');
+      playLabel = document.getElementById('play-label');
+      playIcon = document.getElementById('play-icon');
+      
+      currentTimeEl = document.getElementById('current-time');
+      totalTimeEl = document.getElementById('total-time');
+      
+      volumeSlider = document.getElementById('volume-slider');
+      volumeValue = document.getElementById('volume-value');
+      speedSelect = document.getElementById('speed-select');
+      
+      changeFileBtn = document.getElementById('change-file-btn');
+      filenameEl = document.getElementById('filename');
+      fileMetaEl = document.getElementById('file-meta');
+      
+      // New zoom + scroll elements
+      scrollContainer = document.getElementById('waveform-scroll');
+      zoomInfoEl = document.getElementById('zoom-info');
+      zoomOutBtn = document.getElementById('zoom-out-btn');
+      zoomInBtn = document.getElementById('zoom-in-btn');
+      zoomFitBtn = document.getElementById('zoom-fit-btn');
+
+      // Subtitle elements (new feature - ローカル字幕ファイル読込中心)
+      subtitleSection = document.getElementById('subtitles-section');
+      subtitlesList = document.getElementById('subtitles-list');
+      subtitleCountEl = document.getElementById('subtitle-count');
+      loadSubtitleBtn = document.getElementById('load-subtitle-btn');
+      clearSubtitleBtn = document.getElementById('clear-subtitle-btn');
+      subtitleFileInput = document.getElementById('subtitle-file-input');
+
+      // Font size +/- controls
+      fontDecreaseBtn = document.getElementById('font-decrease-btn');
+      fontIncreaseBtn = document.getElementById('font-increase-btn');
+      fontSizeValue = document.getElementById('font-size-value');
+
+      // Sample button
+      sampleBtn = document.getElementById('sample-btn');
+      
+      // Initial canvas setup (even before file) — use a wide default that fills most of the screen
+      if (canvas) {
+        // Make the placeholder already look full-width on the current viewport
+        const viewportGuess = Math.floor((window.innerWidth || 1400) * 0.92);
+        waveformWidth = Math.max(900, Math.min(1600, viewportGuess));
+        const isMobileInit = window.innerWidth < 480;
+        canvas.style.height = (isMobileInit ? '110px' : '180px');
+        
+        // Optional: draw a faint placeholder waveform pattern (fixed width for demo)
+        setTimeout(() => {
+          if (!peaks.length && canvas) {
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = Math.floor(waveformWidth * dpr);
+            canvas.height = Math.floor(180 * dpr);
+            ctx = canvas.getContext('2d');
+            ctx.scale(dpr, dpr);
+            
+            // Very subtle empty state bars (demo only)
+            const w = canvas.width / dpr;
+            const h = canvas.height / dpr;
+            ctx.clearRect(0, 0, w, h);
+            ctx.fillStyle = '#27272a';
+            const barW = w / 80;
+            for (let i = 0; i < 80; i++) {
+              const ph = 12 + Math.sin(i * 0.8) * 18 + (Math.random() * 4);
+              ctx.fillRect(i * barW, (h / 2) - ph, Math.max(1, barW - 1), ph * 2);
+            }
+            if (zoomInfoEl) zoomInfoEl.textContent = `${waveformWidth}px`;
+          }
+        }, 30);
+      }
+      
+      // Attach all listeners
+      attachSeekHandlers();
+      attachControlListeners();
+      attachUploadListeners();
+      attachZoomListeners();
+      attachSubtitleListeners();
+
+      // Font size controls
+      if (fontDecreaseBtn) fontDecreaseBtn.addEventListener('click', () => changeSubtitleFontSize(-1));
+      if (fontIncreaseBtn) fontIncreaseBtn.addEventListener('click', () => changeSubtitleFontSize(+1));
+      applySubtitleFontSize(); // initial value
+
+      // Sample button
+      if (sampleBtn) {
+        sampleBtn.addEventListener('click', loadSampleAudio);
+      }
+      
+      // Default volume
+      if (volumeSlider && volumeValue) {
+        volumeSlider.value = '0.85';
+        volumeValue.textContent = '85%';
+      }
+      
+      // Make sure initial volume applies once audio exists (handled in load)
+      
+      // Bonus: allow pressing space even if focus is elsewhere (already global)
+      console.log('%c[Waveform Player] 準備完了。MP3ファイルを読み込んでください。', 'color:#64748b');
+    }
+
+    // Boot
+    window.addEventListener('DOMContentLoaded', initializePlayer);
+  </script>
+</body>
+</html>
