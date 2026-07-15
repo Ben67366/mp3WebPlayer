@@ -296,6 +296,9 @@
           </div>
 
           <div class="flex items-center gap-1.5 flex-wrap justify-end">
+            <button id="record-toggle-btn"
+                    class="px-3 py-1 text-xs font-medium rounded-2xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 active:bg-zinc-950 transition-colors"
+                    title="シャドーイング用に自分の声を録音・再生">録音</button>
             <button id="label-mode-btn"
                     class="hidden md:inline-flex px-3 py-1 text-xs font-medium rounded-2xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 active:bg-zinc-950 transition-colors"
                     title="会話の話者ラベルを付ける（PC専用）">ラベル付け</button>
@@ -305,6 +308,24 @@
             <button id="clear-subtitle-btn"
                     class="px-3 py-1 text-xs font-medium rounded-2xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 active:bg-zinc-950 transition-colors">クリア</button>
           </div>
+        </div>
+
+        <!-- Shadowing record panel (toggle via 録音 button) -->
+        <div id="record-panel"
+             class="hidden items-center justify-between gap-2 mb-1.5 px-2 py-1.5 flex-shrink-0 flex-wrap bg-zinc-900/80 border border-zinc-800 rounded-2xl">
+          <div class="flex items-center gap-1.5 flex-wrap">
+            <span class="text-[10px] sm:text-xs text-zinc-400 select-none">マイク録音</span>
+            <button id="record-start-btn"
+                    class="px-3 py-1 text-xs font-medium rounded-xl bg-rose-900/60 hover:bg-rose-900 border border-rose-800 text-rose-200 active:bg-rose-950 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                    title="マイクで録音を開始">録音</button>
+            <button id="record-play-btn"
+                    class="px-3 py-1 text-xs font-medium rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 active:bg-zinc-950 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                    title="最新の録音を再生（録音中はストップしてから再生）" disabled>再生</button>
+            <button id="record-stop-btn"
+                    class="px-3 py-1 text-xs font-medium rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 active:bg-zinc-950 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                    title="録音を停止してすぐ再生" disabled>ストップ</button>
+          </div>
+          <span id="record-status" class="text-[10px] sm:text-xs text-zinc-500 tabular-nums select-none">待機中</span>
         </div>
 
         <!-- Speaker labeling toolbar (PC only, shown when ラベル付け is ON) -->
@@ -335,7 +356,7 @@
         </div>
 
         <p class="mt-1 px-1 text-[9px] sm:text-[10px] text-zinc-500 leading-snug flex-shrink-0">
-          対応: .srt / .vtt / .json。ドラッグ＆ドロップ可。ブラウザ内処理。PCでは「ラベル付け」で話者 [A]/[B]… を付けて SRT 保存できます。
+          対応: .srt / .vtt / .json。ドラッグ＆ドロップ可。ブラウザ内処理。「録音」でシャドーイング用マイク録音（最新1本のみ）。PCでは「ラベル付け」で話者 [A]/[B]… を付けて SRT 保存できます。マイクは HTTPS または localhost 推奨。
         </p>
       </div>
 
@@ -393,6 +414,23 @@
     let participantSummary = null;
     let participantBadges = null;
     let saveSrtBtn = null;
+
+    // Shadowing mic recording (latest take only)
+    let recordToggleBtn = null;
+    let recordPanel = null;
+    let recordStartBtn = null;
+    let recordStopBtn = null;
+    let recordPlayBtn = null;
+    let recordStatusEl = null;
+    let recordPanelOpen = false;
+    let mediaRecorder = null;
+    let mediaStream = null;
+    let recordChunks = [];
+    let latestRecordingBlob = null;
+    let latestRecordingUrl = null;
+    let recordPlaybackAudio = null;
+    let playAfterStop = false;
+    let isRecording = false;
 
     // Font size for subtitles (adjustable with +/- buttons)
     let subtitleFontSize = 14;
@@ -1600,6 +1638,275 @@
       updateZoomButtons();
     }
 
+    // --- Shadowing mic recording (latest take only) ---
+    function setRecordStatus(text) {
+      if (recordStatusEl) recordStatusEl.textContent = text;
+    }
+
+    function updateRecordControls() {
+      const hasRecording = !!latestRecordingBlob;
+      if (recordStartBtn) recordStartBtn.disabled = isRecording;
+      if (recordStopBtn) recordStopBtn.disabled = !isRecording;
+      // 再生: 録音中も有効（押すとストップ→即再生）。未録音かつ非録音時のみ disabled
+      if (recordPlayBtn) recordPlayBtn.disabled = !isRecording && !hasRecording;
+    }
+
+    function updateRecordPanelVisibility() {
+      if (!recordPanel) return;
+      if (recordPanelOpen) {
+        recordPanel.classList.remove('hidden');
+        recordPanel.classList.add('flex');
+      } else {
+        recordPanel.classList.add('hidden');
+        recordPanel.classList.remove('flex');
+      }
+      if (recordToggleBtn) {
+        if (recordPanelOpen) {
+          recordToggleBtn.classList.add('bg-rose-900/70', 'border-rose-700', 'text-rose-200');
+          recordToggleBtn.classList.remove('bg-zinc-800', 'border-zinc-700', 'text-zinc-300');
+        } else {
+          recordToggleBtn.classList.remove('bg-rose-900/70', 'border-rose-700', 'text-rose-200');
+          recordToggleBtn.classList.add('bg-zinc-800', 'border-zinc-700', 'text-zinc-300');
+        }
+      }
+    }
+
+    function toggleRecordPanel() {
+      recordPanelOpen = !recordPanelOpen;
+      updateRecordPanelVisibility();
+      // Closing panel does not discard the latest recording (user may re-open and play)
+    }
+
+    function discardLatestRecordingUrl() {
+      if (latestRecordingUrl) {
+        try { URL.revokeObjectURL(latestRecordingUrl); } catch (_) { /* ignore */ }
+        latestRecordingUrl = null;
+      }
+    }
+
+    function stopRecordPlayback() {
+      if (recordPlaybackAudio) {
+        try {
+          recordPlaybackAudio.pause();
+          recordPlaybackAudio.currentTime = 0;
+        } catch (_) { /* ignore */ }
+      }
+    }
+
+    function stopMediaStream() {
+      if (mediaStream) {
+        mediaStream.getTracks().forEach(t => {
+          try { t.stop(); } catch (_) { /* ignore */ }
+        });
+        mediaStream = null;
+      }
+    }
+
+    function pickRecorderMimeType() {
+      const candidates = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+        'audio/ogg;codecs=opus'
+      ];
+      if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) {
+        return '';
+      }
+      for (const t of candidates) {
+        if (MediaRecorder.isTypeSupported(t)) return t;
+      }
+      return '';
+    }
+
+    async function startMicRecording() {
+      if (isRecording) return;
+      if (typeof MediaRecorder === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        alert('このブラウザではマイク録音に対応していません。\nHTTPS または localhost で開いているかも確認してください。');
+        return;
+      }
+
+      // 録音開始時: メイン音声・録音再生の両方をストップ
+      if (audio && !audio.paused) {
+        try {
+          audio.pause();
+          isPlaying = false;
+          updatePlayButton(false);
+          stopProgressLoop();
+          drawWaveform(getProgress());
+        } catch (_) { /* ignore */ }
+      }
+      stopRecordPlayback();
+
+      // New take: drop previous blob (latest only)
+      discardLatestRecordingUrl();
+      latestRecordingBlob = null;
+      recordChunks = [];
+      playAfterStop = false;
+
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err) {
+        console.error('getUserMedia failed', err);
+        alert('マイクへのアクセスが拒否されたか、利用できません。\nブラウザの許可設定を確認してください。');
+        updateRecordControls();
+        return;
+      }
+
+      const mime = pickRecorderMimeType();
+      try {
+        mediaRecorder = mime
+          ? new MediaRecorder(mediaStream, { mimeType: mime })
+          : new MediaRecorder(mediaStream);
+      } catch (err) {
+        console.error('MediaRecorder create failed', err);
+        stopMediaStream();
+        alert('録音の開始に失敗しました。');
+        updateRecordControls();
+        return;
+      }
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) recordChunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = () => {
+        isRecording = false;
+        stopMediaStream();
+
+        const type = (mediaRecorder && mediaRecorder.mimeType) || mime || 'audio/webm';
+        mediaRecorder = null;
+
+        if (!recordChunks.length) {
+          setRecordStatus('待機中');
+          updateRecordControls();
+          playAfterStop = false;
+          return;
+        }
+
+        // Keep only the latest take
+        discardLatestRecordingUrl();
+        latestRecordingBlob = new Blob(recordChunks, { type });
+        recordChunks = [];
+        latestRecordingUrl = URL.createObjectURL(latestRecordingBlob);
+
+        const shouldPlay = playAfterStop;
+        playAfterStop = false;
+        updateRecordControls();
+
+        if (shouldPlay) {
+          playLatestRecording();
+        } else {
+          setRecordStatus('録音済み');
+        }
+      };
+
+      mediaRecorder.onerror = (e) => {
+        console.error('MediaRecorder error', e);
+        isRecording = false;
+        stopMediaStream();
+        mediaRecorder = null;
+        setRecordStatus('待機中');
+        updateRecordControls();
+        alert('録音中にエラーが発生しました。');
+      };
+
+      try {
+        mediaRecorder.start(200); // timeslice so we get data even on short takes
+        isRecording = true;
+        setRecordStatus('録音中…');
+        updateRecordControls();
+      } catch (err) {
+        console.error('MediaRecorder.start failed', err);
+        stopMediaStream();
+        mediaRecorder = null;
+        isRecording = false;
+        alert('録音の開始に失敗しました。');
+        updateRecordControls();
+      }
+    }
+
+    function stopMicRecording() {
+      if (!isRecording || !mediaRecorder) return;
+      // Always auto-play after user presses ストップ
+      playAfterStop = true;
+      try {
+        if (mediaRecorder.state !== 'inactive') {
+          mediaRecorder.stop();
+        }
+      } catch (err) {
+        console.error('MediaRecorder.stop failed', err);
+        isRecording = false;
+        stopMediaStream();
+        mediaRecorder = null;
+        playAfterStop = false;
+        setRecordStatus('待機中');
+        updateRecordControls();
+      }
+      // onstop handler finalizes blob + play
+    }
+
+    function playLatestRecording() {
+      // 録音中に再生 → ストップしてから即再生（ストップボタンと同じ）
+      if (isRecording) {
+        stopMicRecording();
+        return;
+      }
+      if (!latestRecordingBlob && !latestRecordingUrl) {
+        setRecordStatus('待機中');
+        return;
+      }
+      if (!latestRecordingUrl && latestRecordingBlob) {
+        latestRecordingUrl = URL.createObjectURL(latestRecordingBlob);
+      }
+
+      // Avoid double audio with main player
+      if (audio && !audio.paused) {
+        try { audio.pause(); } catch (_) { /* ignore */ }
+      }
+
+      if (!recordPlaybackAudio) {
+        recordPlaybackAudio = new Audio();
+        recordPlaybackAudio.addEventListener('ended', () => {
+          setRecordStatus(latestRecordingBlob ? '録音済み' : '待機中');
+          updateRecordControls();
+        });
+        recordPlaybackAudio.addEventListener('error', () => {
+          setRecordStatus(latestRecordingBlob ? '録音済み' : '待機中');
+          updateRecordControls();
+        });
+      }
+
+      stopRecordPlayback();
+      recordPlaybackAudio.src = latestRecordingUrl;
+      recordPlaybackAudio.currentTime = 0;
+      setRecordStatus('再生中…');
+      recordPlaybackAudio.play().catch((err) => {
+        console.error('Record playback failed', err);
+        setRecordStatus(latestRecordingBlob ? '録音済み' : '待機中');
+        alert('録音の再生に失敗しました。');
+      });
+      updateRecordControls();
+    }
+
+    function disposeRecordingResources() {
+      playAfterStop = false;
+      if (isRecording && mediaRecorder) {
+        try {
+          playAfterStop = false;
+          if (mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+        } catch (_) { /* ignore */ }
+      }
+      isRecording = false;
+      mediaRecorder = null;
+      stopMediaStream();
+      stopRecordPlayback();
+      discardLatestRecordingUrl();
+      latestRecordingBlob = null;
+      recordChunks = [];
+      setRecordStatus('待機中');
+      updateRecordControls();
+    }
+
     function attachSubtitleListeners() {
       if (!loadSubtitleBtn || !clearSubtitleBtn || !subtitlesList || !subtitleFileInput) return;
 
@@ -1634,6 +1941,22 @@
       if (saveSrtBtn) {
         saveSrtBtn.addEventListener('click', () => saveSubtitlesSrt());
       }
+
+      // Shadowing record panel
+      if (recordToggleBtn) {
+        recordToggleBtn.addEventListener('click', () => toggleRecordPanel());
+      }
+      if (recordStartBtn) {
+        recordStartBtn.addEventListener('click', () => startMicRecording());
+      }
+      if (recordStopBtn) {
+        recordStopBtn.addEventListener('click', () => stopMicRecording());
+      }
+      if (recordPlayBtn) {
+        recordPlayBtn.addEventListener('click', () => playLatestRecording());
+      }
+      // Release mic / blob on page unload
+      window.addEventListener('pagehide', () => disposeRecordingResources());
 
       // Re-render speaker controls when crossing desktop/mobile breakpoint
       if (window.matchMedia) {
@@ -1887,6 +2210,14 @@
       participantBadges = document.getElementById('participant-badges');
       saveSrtBtn = document.getElementById('save-srt-btn');
 
+      // Shadowing record
+      recordToggleBtn = document.getElementById('record-toggle-btn');
+      recordPanel = document.getElementById('record-panel');
+      recordStartBtn = document.getElementById('record-start-btn');
+      recordStopBtn = document.getElementById('record-stop-btn');
+      recordPlayBtn = document.getElementById('record-play-btn');
+      recordStatusEl = document.getElementById('record-status');
+
       // Font size +/- controls
       fontDecreaseBtn = document.getElementById('font-decrease-btn');
       fontIncreaseBtn = document.getElementById('font-increase-btn');
@@ -1939,6 +2270,9 @@
       if (fontIncreaseBtn) fontIncreaseBtn.addEventListener('click', () => changeSubtitleFontSize(+1));
       applySubtitleFontSize(); // initial value
       updateSpeakerToolbar(); // initial participant summary / visibility
+      updateRecordPanelVisibility();
+      updateRecordControls();
+      setRecordStatus('待機中');
 
       // Sample button
       if (sampleBtn) {
