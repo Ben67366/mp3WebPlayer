@@ -295,7 +295,10 @@
             </div>
           </div>
 
-          <div class="flex items-center gap-1.5">
+          <div class="flex items-center gap-1.5 flex-wrap justify-end">
+            <button id="label-mode-btn"
+                    class="hidden md:inline-flex px-3 py-1 text-xs font-medium rounded-2xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 active:bg-zinc-950 transition-colors"
+                    title="会話の話者ラベルを付ける（PC専用）">ラベル付け</button>
             <button id="load-subtitle-btn"
                     class="px-3 py-1 text-xs font-medium rounded-2xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 active:bg-zinc-950 transition-colors"
                     title="SRT / VTT / JSON を読み込み">字幕ファイル読込</button>
@@ -304,13 +307,35 @@
           </div>
         </div>
 
+        <!-- Speaker labeling toolbar (PC only, shown when ラベル付け is ON) -->
+        <div id="speaker-toolbar"
+             class="hidden items-center justify-between gap-2 mb-1.5 px-1 flex-shrink-0 flex-wrap">
+          <div class="flex items-center gap-1.5 flex-wrap">
+            <span class="text-[10px] sm:text-xs text-zinc-400 select-none">参加者</span>
+            <div class="flex items-center border border-zinc-700 rounded-xl overflow-hidden">
+              <button id="participant-dec-btn"
+                      class="w-7 h-6 text-xs text-zinc-300 hover:bg-zinc-800 active:bg-zinc-700 transition-colors"
+                      title="参加者を減らす">−</button>
+              <span id="participant-summary"
+                    class="px-2 text-[10px] text-zinc-300 tabular-nums border-l border-r border-zinc-700 bg-zinc-950 min-w-[4.5rem] text-center">1人 · A</span>
+              <button id="participant-inc-btn"
+                      class="w-7 h-6 text-xs text-zinc-300 hover:bg-zinc-800 active:bg-zinc-700 transition-colors"
+                      title="参加者を増やす">+</button>
+            </div>
+            <div id="participant-badges" class="flex items-center gap-1"></div>
+          </div>
+          <button id="save-srt-btn"
+                  class="px-3 py-1 text-xs font-medium rounded-2xl bg-emerald-900/70 hover:bg-emerald-900 border border-emerald-700 text-emerald-300 active:bg-emerald-950 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                  title="ラベルを反映した SRT を保存">SRTを保存</button>
+        </div>
+
         <div id="subtitles-list"
              class="flex-1 min-h-0 overflow-auto overscroll-contain bg-zinc-900 border border-zinc-800 rounded-2xl p-1 pb-4 text-sm leading-relaxed cursor-default max-h-[45vh] sm:max-h-[320px] md:max-h-[420px] lg:max-h-[50vh]">
           <!-- JS populated rows or empty state prompt -->
         </div>
 
         <p class="mt-1 px-1 text-[9px] sm:text-[10px] text-zinc-500 leading-snug flex-shrink-0">
-          対応: .srt / .vtt / .json。ドラッグ＆ドロップ可。ブラウザ内処理。
+          対応: .srt / .vtt / .json。ドラッグ＆ドロップ可。ブラウザ内処理。PCでは「ラベル付け」で話者 [A]/[B]… を付けて SRT 保存できます。
         </p>
       </div>
 
@@ -346,7 +371,7 @@
 
     // Subtitle / AI transcription state (new evolution for Japanese timed captions)
     let currentAudioFile = null;            // original File kept for Whisper upload
-    let subtitles = [];                     // [{start: seconds, end: seconds, text: string}]
+    let subtitles = [];                     // [{start, end, text, speaker: string|null}]
     let currentSubtitleIndex = -1;          // for active highlight tracking
     let subtitleSection = null;
     let subtitlesList = null;
@@ -354,6 +379,20 @@
     let loadSubtitleBtn = null;
     let clearSubtitleBtn = null;
     let subtitleFileInput = null;
+
+    // Speaker labeling (PC-only, opt-in via ラベル付け button)
+    let speakerLabelMode = false;
+    let participantCount = 1;               // default 1 → ids A, B, C...
+    const MAX_PARTICIPANTS = 10;
+    let subtitleFileHandle = null;          // FileSystemFileHandle for overwrite save
+    let subtitleSourceName = 'subtitles.srt';
+    let labelModeBtn = null;
+    let speakerToolbar = null;
+    let participantDecBtn = null;
+    let participantIncBtn = null;
+    let participantSummary = null;
+    let participantBadges = null;
+    let saveSrtBtn = null;
 
     // Font size for subtitles (adjustable with +/- buttons)
     let subtitleFontSize = 14;
@@ -389,6 +428,54 @@
       return parseFloat(t) || 0;
     }
 
+    /** Split leading [Speaker] prefix from cue text. */
+    function extractSpeakerFromText(raw) {
+      if (!raw) return { speaker: null, text: '' };
+      const m = String(raw).match(/^\s*\[([^\]]+)\]\s*([\s\S]*)$/);
+      if (m) {
+        const speaker = (m[1] || '').trim() || null;
+        const text = (m[2] || '').trim();
+        return { speaker, text };
+      }
+      return { speaker: null, text: String(raw).trim() };
+    }
+
+    function participantId(i) {
+      // 0 → A, 1 → B, ... (cap at A–Z for this app)
+      if (i < 0 || i > 25) return '?';
+      return String.fromCharCode(65 + i);
+    }
+
+    function getParticipants() {
+      return Array.from({ length: participantCount }, (_, i) => participantId(i));
+    }
+
+    function isDesktopSpeakerUi() {
+      return window.matchMedia('(min-width: 768px)').matches;
+    }
+
+    function formatSrtTimestamp(seconds) {
+      if (!isFinite(seconds) || seconds < 0) seconds = 0;
+      let totalMs = Math.round(seconds * 1000);
+      const h = Math.floor(totalMs / 3600000);
+      totalMs %= 3600000;
+      const m = Math.floor(totalMs / 60000);
+      totalMs %= 60000;
+      const s = Math.floor(totalMs / 1000);
+      const ms = totalMs % 1000;
+      const pad = (n, w = 2) => String(n).padStart(w, '0');
+      return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms, 3)}`;
+    }
+
+    function serializeSRT(cues) {
+      return (cues || []).map((cue, i) => {
+        const body = cue.speaker
+          ? `[${cue.speaker}] ${cue.text || ''}`.trim()
+          : (cue.text || '');
+        return `${i + 1}\n${formatSrtTimestamp(cue.start)} --> ${formatSrtTimestamp(cue.end)}\n${body}`;
+      }).join('\n\n') + (cues && cues.length ? '\n' : '');
+    }
+
     function parseSRT(text) {
       const blocks = text.trim().split(/\r?\n\r?\n/);
       const result = [];
@@ -402,7 +489,10 @@
         const start = parseTimeToSeconds(arrowMatch[1]);
         const end = parseTimeToSeconds(arrowMatch[2]);
         const textLines = lines.slice(2).join(' ').trim();
-        if (textLines) result.push({ start, end, text: textLines });
+        if (textLines) {
+          const { speaker, text } = extractSpeakerFromText(textLines);
+          if (text) result.push({ start, end, text, speaker });
+        }
       }
       return result.sort((a, b) => a.start - b.start);
     }
@@ -424,7 +514,10 @@
         // text is everything after the timing line
         const idx = lines.indexOf(timingLine);
         const textLines = (idx >= 0 ? lines.slice(idx + 1) : lines.slice(1)).join(' ').trim();
-        if (textLines) result.push({ start, end, text: textLines });
+        if (textLines) {
+          const { speaker, text } = extractSpeakerFromText(textLines);
+          if (text) result.push({ start, end, text, speaker });
+        }
       }
       return result.sort((a, b) => a.start - b.start);
     }
@@ -432,23 +525,299 @@
     function parseJSONSubtitles(text) {
       try {
         const data = JSON.parse(text);
+        const normalize = (s) => {
+          const rawText = (s.text || '').trim();
+          const fromField = (s.speaker != null && String(s.speaker).trim()) || null;
+          const extracted = extractSpeakerFromText(rawText);
+          const speaker = fromField || extracted.speaker;
+          const body = fromField ? rawText.replace(/^\s*\[[^\]]+\]\s*/, '').trim() || extracted.text : extracted.text;
+          return {
+            start: Number(s.start) || 0,
+            end: Number(s.end) || 0,
+            text: body || rawText,
+            speaker
+          };
+        };
         // Case 1: direct Whisper verbose_json
         if (data && Array.isArray(data.segments)) {
-          return data.segments
-            .map(s => ({ start: Number(s.start) || 0, end: Number(s.end) || 0, text: (s.text || '').trim() }))
-            .filter(s => s.text);
+          return data.segments.map(normalize).filter(s => s.text);
         }
         // Case 2: simple array [{start, end, text}, ...]
         if (Array.isArray(data)) {
-          return data
-            .map(s => ({ start: Number(s.start) || 0, end: Number(s.end) || 0, text: (s.text || '').trim() }))
-            .filter(s => s.text)
-            .sort((a, b) => a.start - b.start);
+          return data.map(normalize).filter(s => s.text).sort((a, b) => a.start - b.start);
         }
       } catch (e) {
         console.warn('JSON subtitle parse failed', e);
       }
       return [];
+    }
+
+    /** Expand participantCount so known A–Z speakers from file are available. */
+    function syncParticipantCountFromSubtitles() {
+      let maxIdx = -1;
+      for (const c of subtitles) {
+        if (!c.speaker || c.speaker.length !== 1) continue;
+        const code = c.speaker.toUpperCase().charCodeAt(0);
+        if (code >= 65 && code <= 90) maxIdx = Math.max(maxIdx, code - 65);
+      }
+      if (maxIdx >= 0) {
+        participantCount = Math.max(participantCount, Math.min(MAX_PARTICIPANTS, maxIdx + 1));
+      }
+    }
+
+    function setParticipantCount(n) {
+      participantCount = Math.max(1, Math.min(MAX_PARTICIPANTS, n | 0));
+      const allowed = new Set(getParticipants());
+      for (const cue of subtitles) {
+        if (cue.speaker && !allowed.has(cue.speaker)) cue.speaker = null;
+      }
+      updateSpeakerToolbar();
+      if (speakerLabelMode) renderSubtitles();
+    }
+
+    function setCueSpeaker(idx, speaker) {
+      if (!subtitles[idx]) return;
+      subtitles[idx].speaker = speaker || null;
+      // Keep [A] badge in sync without re-rendering the whole list (preserves control focus)
+      if (!subtitlesList) return;
+      const row = subtitlesList.querySelector(`[data-idx="${idx}"]`);
+      if (!row) return;
+      let badge = row.querySelector('.speaker-badge');
+      if (speaker) {
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'speaker-badge shrink-0 font-mono text-[10px] px-1.5 py-0.5 rounded-md bg-emerald-950/80 border border-emerald-800 text-emerald-300 select-none mt-0.5';
+          // Insert after time column (first child)
+          const afterTime = row.firstChild ? row.firstChild.nextSibling : null;
+          row.insertBefore(badge, afterTime);
+        }
+        badge.textContent = `[${speaker}]`;
+        badge.title = `話者: ${speaker}`;
+      } else if (badge) {
+        badge.remove();
+      }
+    }
+
+    function updateSpeakerToolbar() {
+      if (participantSummary) {
+        const parts = getParticipants();
+        participantSummary.textContent = `${participantCount}人 · ${parts.join(' ')}`;
+      }
+      if (participantBadges) {
+        participantBadges.innerHTML = '';
+        getParticipants().forEach(p => {
+          const badge = document.createElement('span');
+          badge.className = 'text-[10px] px-1.5 py-0.5 rounded-md bg-zinc-800 border border-zinc-700 text-zinc-300 font-mono';
+          badge.textContent = p;
+          participantBadges.appendChild(badge);
+        });
+      }
+      if (participantDecBtn) participantDecBtn.disabled = participantCount <= 1;
+      if (participantIncBtn) participantIncBtn.disabled = participantCount >= MAX_PARTICIPANTS;
+      if (saveSrtBtn) saveSrtBtn.disabled = !subtitles.length;
+      updateSpeakerToolbarVisibility();
+    }
+
+    function updateSpeakerToolbarVisibility() {
+      if (!speakerToolbar) return;
+      const show = speakerLabelMode && isDesktopSpeakerUi();
+      if (show) {
+        speakerToolbar.classList.remove('hidden');
+        speakerToolbar.classList.add('flex');
+      } else {
+        speakerToolbar.classList.add('hidden');
+        speakerToolbar.classList.remove('flex');
+      }
+      if (labelModeBtn) {
+        if (speakerLabelMode) {
+          labelModeBtn.classList.add('bg-emerald-900/70', 'border-emerald-700', 'text-emerald-300');
+          labelModeBtn.classList.remove('bg-zinc-800', 'border-zinc-700', 'text-zinc-300');
+        } else {
+          labelModeBtn.classList.remove('bg-emerald-900/70', 'border-emerald-700', 'text-emerald-300');
+          labelModeBtn.classList.add('bg-zinc-800', 'border-zinc-700', 'text-zinc-300');
+        }
+      }
+    }
+
+    function toggleSpeakerLabelMode() {
+      speakerLabelMode = !speakerLabelMode;
+      updateSpeakerToolbar();
+      renderSubtitles();
+    }
+
+    function buildSpeakerControl(cue, idx) {
+      const wrap = document.createElement('div');
+      wrap.className = 'speaker-control shrink-0 flex items-center gap-1.5 flex-wrap justify-end max-w-[46%]';
+      wrap.addEventListener('click', (e) => e.stopPropagation());
+
+      const parts = getParticipants();
+
+      if (parts.length === 1) {
+        const label = document.createElement('label');
+        label.className = 'flex items-center gap-1 text-[10px] text-zinc-400 cursor-pointer select-none';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'accent-emerald-500';
+        cb.checked = cue.speaker === parts[0];
+        cb.addEventListener('change', () => setCueSpeaker(idx, cb.checked ? parts[0] : null));
+        const name = document.createElement('span');
+        name.className = 'font-mono text-zinc-300';
+        name.textContent = parts[0];
+        label.appendChild(cb);
+        label.appendChild(name);
+        wrap.appendChild(label);
+        return wrap;
+      }
+
+      if (parts.length <= 3) {
+        const groupName = `speaker-${idx}`;
+        const makeRadio = (value, checked, labelText) => {
+          const lab = document.createElement('label');
+          lab.className = 'flex items-center gap-0.5 text-[10px] text-zinc-400 cursor-pointer select-none';
+          const radio = document.createElement('input');
+          radio.type = 'radio';
+          radio.name = groupName;
+          radio.value = value;
+          radio.checked = checked;
+          radio.className = 'accent-emerald-500';
+          radio.addEventListener('change', () => {
+            if (radio.checked) setCueSpeaker(idx, value || null);
+          });
+          const span = document.createElement('span');
+          span.className = value ? 'font-mono text-zinc-300' : 'text-zinc-500';
+          span.textContent = labelText;
+          lab.appendChild(radio);
+          lab.appendChild(span);
+          return lab;
+        };
+        wrap.appendChild(makeRadio('', !cue.speaker, 'なし'));
+        parts.forEach(p => wrap.appendChild(makeRadio(p, cue.speaker === p, p)));
+        return wrap;
+      }
+
+      // 4+
+      const sel = document.createElement('select');
+      sel.className = 'bg-zinc-950 border border-zinc-700 rounded-lg text-[10px] text-zinc-300 px-1.5 py-0.5 max-w-[5.5rem]';
+      const optNone = document.createElement('option');
+      optNone.value = '';
+      optNone.textContent = 'なし';
+      sel.appendChild(optNone);
+      parts.forEach(p => {
+        const o = document.createElement('option');
+        o.value = p;
+        o.textContent = p;
+        if (cue.speaker === p) o.selected = true;
+        sel.appendChild(o);
+      });
+      if (!cue.speaker) sel.value = '';
+      sel.addEventListener('change', () => setCueSpeaker(idx, sel.value || null));
+      wrap.appendChild(sel);
+      return wrap;
+    }
+
+    async function saveSubtitlesSrt() {
+      if (!subtitles.length) {
+        alert('保存する字幕がありません。');
+        return;
+      }
+      const content = serializeSRT(subtitles);
+      const filename = subtitleSourceName && /\.srt$/i.test(subtitleSourceName)
+        ? subtitleSourceName
+        : (subtitleSourceName ? subtitleSourceName.replace(/\.[^.]+$/, '') + '.srt' : 'subtitles.srt');
+
+      // 1) Overwrite via existing file handle
+      if (subtitleFileHandle && typeof subtitleFileHandle.createWritable === 'function') {
+        try {
+          const writable = await subtitleFileHandle.createWritable();
+          await writable.write(content);
+          await writable.close();
+          alert('SRT を上書き保存しました。');
+          return;
+        } catch (err) {
+          console.warn('Overwrite failed, trying save picker / download', err);
+        }
+      }
+
+      // 2) Save file picker (Chromium)
+      if (typeof window.showSaveFilePicker === 'function') {
+        try {
+          const handle = await window.showSaveFilePicker({
+            suggestedName: filename,
+            types: [{
+              description: 'SubRip Subtitle',
+              accept: { 'application/x-subrip': ['.srt'], 'text/plain': ['.srt'] }
+            }]
+          });
+          const writable = await handle.createWritable();
+          await writable.write(content);
+          await writable.close();
+          subtitleFileHandle = handle;
+          subtitleSourceName = handle.name || filename;
+          alert('SRT を保存しました。');
+          return;
+        } catch (err) {
+          if (err && err.name === 'AbortError') return;
+          console.warn('Save picker failed, falling back to download', err);
+        }
+      }
+
+      // 3) Download fallback
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      alert('ブラウザの制限によりダウンロードとして保存しました。');
+    }
+
+    async function openSubtitleWithPicker() {
+      if (typeof window.showOpenFilePicker !== 'function') {
+        subtitleFileInput.click();
+        return;
+      }
+      try {
+        const [handle] = await window.showOpenFilePicker({
+          multiple: false,
+          types: [{
+            description: 'Subtitle files',
+            accept: {
+              'application/x-subrip': ['.srt'],
+              'text/vtt': ['.vtt'],
+              'application/json': ['.json'],
+              'text/plain': ['.srt', '.vtt', '.json']
+            }
+          }]
+        });
+        subtitleFileHandle = handle;
+        // Prefer write permission so 「SRTを保存」 can overwrite in place
+        if (handle.requestPermission) {
+          try {
+            let perm = handle.queryPermission
+              ? await handle.queryPermission({ mode: 'readwrite' })
+              : 'prompt';
+            if (perm !== 'granted') {
+              perm = await handle.requestPermission({ mode: 'readwrite' });
+            }
+            if (perm !== 'granted') {
+              // Keep handle anyway; save may fall back to save-picker / download
+              console.info('Write permission not granted for subtitle file; overwrite may require save dialog.');
+            }
+          } catch (permErr) {
+            console.warn('Subtitle write permission request failed', permErr);
+          }
+        }
+        const file = await handle.getFile();
+        subtitleSourceName = file.name || 'subtitles.srt';
+        loadSubtitleFile(file, { keepHandle: true });
+      } catch (err) {
+        if (err && err.name === 'AbortError') return;
+        console.warn('Open picker failed, using input', err);
+        subtitleFileInput.click();
+      }
     }
 
     // --- Font size controls for subtitles (mobile + accessibility) ---
@@ -478,27 +847,41 @@
         subtitlesList.innerHTML = `<div class="h-full flex items-center justify-center text-center text-xs text-zinc-400 px-3">字幕が読み込まれていません。<br>「字幕ファイル読込」ボタンから .srt / .vtt / .json ファイルを読み込んでください。</div>`;
         if (subtitleCountEl) subtitleCountEl.textContent = '0件';
         applySubtitleFontSize();
+        updateSpeakerToolbar();
         return;
       }
 
+      const showSpeakerEdit = speakerLabelMode && isDesktopSpeakerUi();
       const frag = document.createDocumentFragment();
       subtitles.forEach((cue, idx) => {
         const row = document.createElement('div');
-        row.className = 'flex gap-2 px-3 py-2 rounded-xl hover:bg-zinc-800 cursor-pointer transition-colors border border-transparent';
+        row.className = 'flex gap-2 px-3 py-2 rounded-xl hover:bg-zinc-800 cursor-pointer transition-colors border border-transparent items-start';
         row.dataset.start = cue.start;
         row.dataset.end = cue.end;
         row.dataset.idx = idx;
 
         const time = document.createElement('span');
-        time.className = 'font-mono text-xs text-cyan-400 shrink-0 w-[52px] tabular-nums select-none';
+        time.className = 'font-mono text-xs text-cyan-400 shrink-0 w-[52px] tabular-nums select-none pt-0.5';
         time.textContent = formatTime(cue.start);
+        row.appendChild(time);
+
+        // Always show speaker badge when label exists (visible even if ラベル付け is OFF)
+        if (cue.speaker) {
+          const badge = document.createElement('span');
+          badge.className = 'speaker-badge shrink-0 font-mono text-[10px] px-1.5 py-0.5 rounded-md bg-emerald-950/80 border border-emerald-800 text-emerald-300 select-none mt-0.5';
+          badge.textContent = `[${cue.speaker}]`;
+          badge.title = `話者: ${cue.speaker}`;
+          row.appendChild(badge);
+        }
 
         const txt = document.createElement('span');
-        txt.className = 'text-zinc-200 break-words';
+        txt.className = 'text-zinc-200 break-words flex-1 min-w-0';
         txt.textContent = cue.text;
-
-        row.appendChild(time);
         row.appendChild(txt);
+
+        if (showSpeakerEdit) {
+          row.appendChild(buildSpeakerControl(cue, idx));
+        }
 
         row.addEventListener('click', () => handleSubtitleClick(cue.start));
         frag.appendChild(row);
@@ -513,11 +896,14 @@
 
       // Apply adjustable subtitle font size
       applySubtitleFontSize();
+      updateSpeakerToolbar();
     }
 
     function clearSubtitles() {
       subtitles = [];
       currentSubtitleIndex = -1;
+      subtitleFileHandle = null;
+      subtitleSourceName = 'subtitles.srt';
       if (subtitlesList) {
         subtitlesList.innerHTML = `<div class="px-3 py-4 text-center text-xs text-zinc-400">字幕が読み込まれていません。<br>「字幕ファイル読込」からファイルを読み込んでください。</div>`;
       }
@@ -527,6 +913,7 @@
 
       // Keep font size consistent even in empty state
       applySubtitleFontSize();
+      updateSpeakerToolbar();
     }
 
     function updateActiveSubtitle(currentTime) {
@@ -583,8 +970,12 @@
       // the RAF loop + updateActive will take care of highlighting
     }
 
-    function loadSubtitleFile(file) {
+    function loadSubtitleFile(file, options = {}) {
       if (!file || !subtitlesList) return;
+      if (!options.keepHandle) {
+        subtitleFileHandle = null;
+      }
+      subtitleSourceName = file.name || 'subtitles.srt';
       const reader = new FileReader();
       reader.onload = (e) => {
         const text = e.target.result || '';
@@ -603,7 +994,19 @@
           if (!parsed.length) parsed = parseJSONSubtitles(text);
         }
         if (parsed.length) {
-          subtitles = parsed;
+          // Ensure speaker field exists on every cue
+          subtitles = parsed.map(c => ({
+            start: c.start,
+            end: c.end,
+            text: c.text,
+            speaker: c.speaker || null
+          }));
+          syncParticipantCountFromSubtitles();
+          // If file already has speaker labels, open label mode on desktop so controls restore
+          const hasSpeakers = subtitles.some(c => c.speaker);
+          if (hasSpeakers && isDesktopSpeakerUi()) {
+            speakerLabelMode = true;
+          }
           renderSubtitles();
         } else {
           alert('字幕を解析できませんでした。対応形式: .srt / .vtt / .json');
@@ -1200,7 +1603,14 @@
     function attachSubtitleListeners() {
       if (!loadSubtitleBtn || !clearSubtitleBtn || !subtitlesList || !subtitleFileInput) return;
 
-      loadSubtitleBtn.addEventListener('click', () => subtitleFileInput.click());
+      loadSubtitleBtn.addEventListener('click', () => {
+        // Prefer File System Access API on desktop for overwrite-capable handles
+        if (isDesktopSpeakerUi() && typeof window.showOpenFilePicker === 'function') {
+          openSubtitleWithPicker();
+        } else {
+          subtitleFileInput.click();
+        }
+      });
 
       subtitleFileInput.addEventListener('change', () => {
         const f = subtitleFileInput.files && subtitleFileInput.files[0];
@@ -1211,6 +1621,30 @@
       clearSubtitleBtn.addEventListener('click', () => {
         clearSubtitles();
       });
+
+      if (labelModeBtn) {
+        labelModeBtn.addEventListener('click', () => toggleSpeakerLabelMode());
+      }
+      if (participantDecBtn) {
+        participantDecBtn.addEventListener('click', () => setParticipantCount(participantCount - 1));
+      }
+      if (participantIncBtn) {
+        participantIncBtn.addEventListener('click', () => setParticipantCount(participantCount + 1));
+      }
+      if (saveSrtBtn) {
+        saveSrtBtn.addEventListener('click', () => saveSubtitlesSrt());
+      }
+
+      // Re-render speaker controls when crossing desktop/mobile breakpoint
+      if (window.matchMedia) {
+        const mq = window.matchMedia('(min-width: 768px)');
+        const onBp = () => {
+          updateSpeakerToolbarVisibility();
+          if (subtitles.length) renderSubtitles();
+        };
+        if (mq.addEventListener) mq.addEventListener('change', onBp);
+        else if (mq.addListener) mq.addListener(onBp);
+      }
 
       // Drag & drop subtitles onto the list area (convenient when audio is already loaded)
       subtitlesList.addEventListener('dragover', (e) => {
@@ -1228,7 +1662,7 @@
           // accept common subtitle extensions or json
           const n = f.name.toLowerCase();
           if (n.endsWith('.srt') || n.endsWith('.vtt') || n.endsWith('.json')) {
-            loadSubtitleFile(f);
+            loadSubtitleFile(f); // no writable handle from drop
           } else {
             alert('字幕ファイル (.srt / .vtt / .json) をドロップしてください。');
           }
@@ -1239,8 +1673,8 @@
     function attachUploadListeners() {
       // Click on zone opens file picker
       uploadZone.addEventListener('click', (e) => {
-        // Ignore if clicking the actual button inside
-        if (e.target.tagName === 'BUTTON') return;
+        // Ignore clicks on buttons (or their children, e.g. span/svg inside)
+        if (e.target.closest('button')) return;
         fileInput.click();
       });
       
@@ -1444,6 +1878,15 @@
       clearSubtitleBtn = document.getElementById('clear-subtitle-btn');
       subtitleFileInput = document.getElementById('subtitle-file-input');
 
+      // Speaker labeling (PC)
+      labelModeBtn = document.getElementById('label-mode-btn');
+      speakerToolbar = document.getElementById('speaker-toolbar');
+      participantDecBtn = document.getElementById('participant-dec-btn');
+      participantIncBtn = document.getElementById('participant-inc-btn');
+      participantSummary = document.getElementById('participant-summary');
+      participantBadges = document.getElementById('participant-badges');
+      saveSrtBtn = document.getElementById('save-srt-btn');
+
       // Font size +/- controls
       fontDecreaseBtn = document.getElementById('font-decrease-btn');
       fontIncreaseBtn = document.getElementById('font-increase-btn');
@@ -1495,10 +1938,15 @@
       if (fontDecreaseBtn) fontDecreaseBtn.addEventListener('click', () => changeSubtitleFontSize(-1));
       if (fontIncreaseBtn) fontIncreaseBtn.addEventListener('click', () => changeSubtitleFontSize(+1));
       applySubtitleFontSize(); // initial value
+      updateSpeakerToolbar(); // initial participant summary / visibility
 
       // Sample button
       if (sampleBtn) {
-        sampleBtn.addEventListener('click', loadSampleAudio);
+        sampleBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          loadSampleAudio();
+        });
       }
       
       // Default volume
